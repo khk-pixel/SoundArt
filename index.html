@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="icon" type="image/png" href="favicon.png" />
+<title>音→幾何学イラストジェネレーター（duration連動 + ギャラリー）</title>
+<style>
+:root { --bg:#071026; --panel:rgba(255,255,255,0.03); --text:#e6eef6 }
+html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;background:linear-gradient(180deg,#071026,#08142a);color:var(--text)}
+.app{max-width:1200px;margin:20px auto;padding:18px;background:rgba(255,255,255,0.02);border-radius:12px;box-shadow:0 8px 40px rgba(2,6,23,0.6)}
+header{display:flex;gap:16px;align-items:center}
+header h1{font-size:20px;margin:0}
+.controls{display:flex;gap:14px;flex-wrap:wrap;margin-top:12px}
+.panel{background:var(--panel);padding:12px;border-radius:10px;min-width:240px}
+label{display:block;font-size:13px;color:#bcd3ee;margin-bottom:8px}
+button{background:linear-gradient(180deg,#1f2937,#111827);color:var(--text);border:0;padding:8px 12px;border-radius:8px;cursor:pointer}
+canvas{border-radius:12px;background:transparent;display:block;width:100%;height:640px}
+.muted{opacity:0.75;font-size:13px}
+input[type=range]{width:100%}
+.row{display:flex;gap:12px}
+.right-col{flex:1}
+.inline{display:inline-flex;gap:8px;align-items:center}
+.small{font-size:12px;color:#cfe6ff}
+select,input[type=checkbox]{cursor:pointer}
+
+/* gallery */
+.gallery { display:flex; gap:8px; margin-top:12px; align-items:center; flex-wrap:wrap; }
+.thumb { width:128px; height:82px; border-radius:8px; overflow:hidden; background:#091426; display:inline-block; position:relative; cursor:pointer; box-shadow:0 6px 20px rgba(0,0,0,0.6);}
+.thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+.thumb .del { position:absolute; right:6px; top:6px; background:rgba(0,0,0,0.5); border-radius:6px; padding:2px 6px; font-size:12px; cursor:pointer; }
+.thumb .idx { position:absolute; left:6px; top:6px; background:rgba(255,255,255,0.06); border-radius:6px; padding:2px 6px; font-size:12px; color:#cfe6ff; }
+.gallery-empty { color:#8faedb; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="app">
+    <header>
+        <div>
+            <h1>音 → 幾何学イラスト（duration連動 + ギャラリー）</h1>
+            <div class="muted">音の長さで描画サイズ／密度が変化します。生成した画像は最大5枚まで保存できます。</div>
+        </div>
+    </header>
+
+    <div class="controls">
+        <div class="panel">
+            <label>音声ファイルを読み込む</label>
+            <input id="fileInput" type="file" accept="audio/*">
+            <div style="height:8px"></div>
+            <button id="recordBtn">録音: 開始</button>
+            <button id="playBtn">▶ 再生 / 一時停止</button>
+            <button id="saveBtn">Save（ギャラリーに保存）</button>
+            <button id="exportBtn">画像をエクスポート (PNG)</button>
+        </div>
+
+        <div class="panel right-col">
+            <label>スタイル / プリセット</label>
+            <div class="row" style="margin-bottom:8px">
+                <select id="presetSelect">
+                    <option value="kaleido">Kaleidoscope</option>
+                    <option value="lowpoly">Low-Poly</option>
+                    <option value="radial">Radial Rings</option>
+                    <option value="gridlines">Grid Lines</option>
+                    <option value="voronoi">Distance Fields</option>
+                    <option value="prime">Prime Art</option>
+                    <option value="dragon">Dragon Curve</option>
+                </select>
+                <button id="randomizePalette">パレットをランダム</button>
+            </div>
+
+            <label>ビジュアル調整</label>
+            <div class="small">密度（duration に乗算）</div>
+            <input id="density" type="range" min="0.2" max="4" step="0.05" value="1">
+            <div class="small">色の強さ（peak→彩度）</div>
+            <input id="colorStrength" type="range" min="0" max="1" step="0.01" value="0.95">
+            <div class="small">ランダム性（ジッター）</div>
+            <input id="randomness" type="range" min="0" max="1" step="0.01" value="0.3">
+            <div style="height:6px"></div>
+            <label class="inline"><input id="symmetric" type="checkbox" checked> 対称反転（kaleido 用）</label>
+            <div style="height:6px"></div>
+            <label class="small">ストローク幅調整（ZCR に乗算）</label>
+            <input id="strokeMult" type="range" min="0.2" max="6" step="0.1" value="1.0">
+        </div>
+
+        <div class="panel" style="min-width:200px">
+            <label>解析結果（リアルタイム表示）</label>
+            <pre id="features">読み込み待ち...</pre>
+        </div>
+    </div>
+
+    <canvas id="artCanvas" width="1400" height="900"></canvas>
+
+    <div style="height:8px"></div>
+    <div class="muted">ヒント: 音が長いほど、ドラゴン曲線は長く、素数アートは点が増えます。生成後は "Save" でギャラリーへ保存。</div>
+
+    <div style="margin-top:12px" class="panel">
+        <label>ギャラリー（保存された画像）</label>
+        <div id="gallery" class="gallery"></div>
+        <div id="galleryEmpty" class="gallery-empty" style="display:none">まだ保存された画像はありません。</div>
+    </div>
+</div>
+
+<script>
+/* ---- DOM ---- */
+const fileInput = document.getElementById('fileInput');
+const recordBtn = document.getElementById('recordBtn');
+const playBtn = document.getElementById('playBtn');
+const saveBtn = document.getElementById('saveBtn');
+const exportBtn = document.getElementById('exportBtn');
+const featuresEl = document.getElementById('features');
+const canvas = document.getElementById('artCanvas');
+const ctx = canvas.getContext('2d');
+
+const presetSelect = document.getElementById('presetSelect');
+const density = document.getElementById('density');
+const colorStrength = document.getElementById('colorStrength');
+const randomness = document.getElementById('randomness');
+const symmetric = document.getElementById('symmetric');
+const strokeMult = document.getElementById('strokeMult');
+const randomizePaletteBtn = document.getElementById('randomizePalette');
+
+const galleryEl = document.getElementById('gallery');
+const galleryEmpty = document.getElementById('galleryEmpty');
+
+let audioCtx = null;
+let audioBuffer = null;
+let sourceNode = null;
+let playing = false;
+let mediaRecorder = null;
+let recordedChunks = [];
+let palette = generatePalette();
+
+let analyser = null;
+let analyserSource = null;
+let rafId = null;
+let isLive = false;
+let lastFeatures = null;
+
+// gallery storage (max 5) - persisted in localStorage
+const GKEY = 'soundArtGallery_v1';
+let gallery = loadGallery();
+
+/* ---- init ---- */
+function initAudioContext(){ if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+
+// ---- file load ----
+fileInput.addEventListener('change', async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    await initAudioContext();
+    const array = await f.arrayBuffer();
+    audioBuffer = await audioCtx.decodeAudioData(array.slice(0));
+    showFeaturesText('ファイル読み込み: ' + f.name);
+    stopLiveProcessing();
+    const features = extractFeatures(audioBuffer);
+    lastFeatures = features;
+    showFeatures(features);
+    renderGeometric(features);
+});
+
+// ---- record ----
+recordBtn.addEventListener('click', async () => {
+    if (isLive) {
+        stopLiveProcessing();
+        if (mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
+        recordBtn.textContent = '録音: 開始';
+        return;
+    }
+    try {
+        await initAudioContext();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        recordedChunks = [];
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size>0) recordedChunks.push(e.data); };
+        mediaRecorder.onstop = async () => {
+            const blob = new Blob(recordedChunks, { type:'audio/webm' });
+            const array = await blob.arrayBuffer();
+            audioBuffer = await audioCtx.decodeAudioData(array.slice(0));
+            showFeaturesText('録音完了（保存）');
+        };
+        mediaRecorder.start();
+
+        startLiveProcessing(stream);
+        recordBtn.textContent = '録音: 停止';
+    } catch (err) {
+        console.error(err);
+        alert('マイクにアクセスできません: ' + err.message);
+    }
+});
+
+// ---- play ----
+playBtn.addEventListener('click', async () => {
+    if (!audioBuffer) { alert('先に音声を読み込んでください'); return; }
+    await initAudioContext();
+    if (playing) {
+        if (sourceNode) try{ sourceNode.stop(); }catch(e){}
+        playing=false; playBtn.textContent='▶ 再生 / 一時停止'; stopLiveProcessing();
+        const features = extractFeatures(audioBuffer); lastFeatures = features; showFeatures(features); renderGeometric(features);
+        return;
+    }
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = audioBuffer;
+    const localAnalyser = audioCtx.createAnalyser(); localAnalyser.fftSize = 2048;
+    sourceNode.connect(localAnalyser); localAnalyser.connect(audioCtx.destination);
+    sourceNode.start(0);
+    playing = true; playBtn.textContent='■ 停止';
+    attachAnalyser(localAnalyser, sourceNode);
+    sourceNode.onended = () => { playing=false; playBtn.textContent='▶ 再生 / 一時停止'; stopLiveProcessing(); };
+});
+
+// ---- save / export ----
+saveBtn.addEventListener('click', () => { const data = canvas.toDataURL('image/png'); pushGallery(data); renderGallery(); });
+exportBtn.addEventListener('click', () => {
+    const link = document.createElement('a'); link.download = 'geometric-sound-art.png'; link.href = canvas.toDataURL('image/png'); link.click();
+    // also auto-save to gallery
+    const data = canvas.toDataURL('image/png'); pushGallery(data); renderGallery();
+});
+
+// palette
+randomizePaletteBtn.addEventListener('click', () => { palette = generatePalette(); if (lastFeatures) renderGeometric(lastFeatures); });
+
+// controls auto re-render
+const controls = [presetSelect,density,colorStrength,randomness,symmetric,strokeMult];
+controls.forEach(c => c.addEventListener('input', () => { if (lastFeatures) renderGeometric(lastFeatures); }));
+
+function showFeaturesText(txt) { featuresEl.innerText = txt; }
+function showFeatures(f) {
+    const lines = [];
+    lines.push('再生時間: ' + f.duration.toFixed(2) + ' 秒');
+    lines.push('RMS: ' + f.rms.toFixed(4));
+    lines.push('Peak: ' + f.peak.toFixed(3));
+    lines.push('ZCR: ' + f.zcr.toFixed(5));
+    lines.push('推定ピッチ: ' + (f.pitch>0?f.pitch+' Hz':'推定不可'));
+    featuresEl.innerText = lines.join('\n');
+}
+
+/* ---- features extraction ---- */
+function extractFeatures(buffer) {
+    const sr = buffer.sampleRate;
+    const data = buffer.getChannelData(0);
+    const len = data.length;
+    const duration = buffer.duration;
+    let sumSq=0, peak=0, zeroCross=0;
+    for (let i=0;i<len;i++){
+        const v = data[i]; sumSq += v*v; if (Math.abs(v)>peak) peak=Math.abs(v);
+        if (i>0 && (data[i-1]>=0)!=(v>=0)) zeroCross++;
+    }
+    const rms = Math.sqrt(sumSq/len);
+    const zcr = zeroCross/len;
+    const sampleWindow = Math.min(len, sr);
+    const slice = data.slice(0, sampleWindow);
+    const pitch = autoCorrelate(slice, sr);
+    return { duration, rms, peak, zcr, pitch, sampleRate: sr, length: len, waveform: slice };
+}
+
+function autoCorrelate(buf, sampleRate) {
+    const SIZE = buf.length; let rms=0;
+    for(let i=0;i<SIZE;i++){ const v=buf[i]; rms += v*v; }
+    rms = Math.sqrt(rms/SIZE); if (rms<0.01) return -1;
+    let r = new Array(SIZE).fill(0);
+    for (let lag=0; lag<SIZE; lag++){ let sum=0; for(let i=0;i<SIZE-lag;i++) sum += buf[i]*buf[i+lag]; r[lag]=sum; }
+    let peakIndex=-1, peakValue=0;
+    for(let i=1;i<SIZE;i++){ if(r[i]>peakValue){ peakValue=r[i]; peakIndex=i; } }
+    if (peakIndex<=0) return -1;
+    const fundamentalFreq = sampleRate/peakIndex;
+    if (fundamentalFreq>22000 || fundamentalFreq<40) return -1;
+    return Math.round(fundamentalFreq);
+}
+
+/* ---- analyser / realtime ---- */
+function attachAnalyser(aNode, srcNode){
+    stopLiveProcessing();
+    analyser = aNode; analyser.fftSize = analyser.fftSize || 2048;
+    analyserSource = srcNode; isLive = true;
+    rafLoop();
+}
+function startLiveProcessing(stream){
+    stopLiveProcessing();
+    const src = audioCtx.createMediaStreamSource(stream);
+    const localAnalyser = audioCtx.createAnalyser(); localAnalyser.fftSize = 2048;
+    src.connect(localAnalyser);
+    analyserSource = src; analyser = localAnalyser; isLive = true;
+    rafLoop();
+}
+function stopLiveProcessing(){
+    isLive = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (analyser){ try{ analyser.disconnect(); }catch(e){} analyser=null; }
+    if (analyserSource){ try{ analyserSource.disconnect(); }catch(e){} analyserSource=null; }
+}
+function rafLoop(){
+    const bufferLength = analyser.fftSize;
+    const timeData = new Float32Array(bufferLength);
+    const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+    function loop(){
+        if (!isLive || !analyser) return;
+        analyser.getFloatTimeDomainData(timeData);
+        analyser.getByteFrequencyData(freqData);
+
+        let sumSq=0, peak=0, zeroCross=0;
+        for (let i=0;i<timeData.length;i++){ const v = timeData[i]; sumSq+=v*v; if(Math.abs(v)>peak) peak=Math.abs(v); if (i>0 && (timeData[i-1]>=0)!=(v>=0)) zeroCross++; }
+        const rms = Math.sqrt(sumSq/timeData.length);
+        const zcr = zeroCross/timeData.length;
+        const pitch = autoCorrelate(timeData.slice(0, Math.min(timeData.length,2048)), audioCtx.sampleRate);
+        const features = { duration: 1.0, rms, peak, zcr, pitch, sampleRate: audioCtx.sampleRate, length: timeData.length, waveform: timeData.slice(0) };
+        lastFeatures = features; showFeatures(features); renderGeometric(features);
+
+        rafId = requestAnimationFrame(loop);
+    }
+    rafId = requestAnimationFrame(loop);
+}
+
+/* ---- rendering (duration-aware) ---- */
+function renderGeometric(f){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    // duration factor used across presets (clamped)
+    const durationFactor = Math.min(6, 1 + (f.duration || 0)/3); // 1..6 roughly
+
+    const baseHue = f.pitch>0 ? map(Math.log(Math.max(f.pitch,40)), Math.log(40), Math.log(5000), 0, 360) : Math.random()*360;
+    const sat = Math.min(1, f.peak * 1.2 * parseFloat(colorStrength.value));
+    const densityVal = Math.max(0.2, (f.duration || 0.5) * 1.5) * parseFloat(density.value);
+    const rand = parseFloat(randomness.value);
+    const strokeW = Math.max(0.5, strokeMult.value * (0.5 + f.zcr*10));
+
+    // background
+    const bg = ctx.createLinearGradient(0,0,canvas.width,canvas.height);
+    const h1 = (baseHue+0)%360, h2=(baseHue+80)%360, h3=(baseHue+200)%360;
+    bg.addColorStop(0, `hsl(${h1}, ${Math.round(20+sat*80)}%, ${Math.round(10+(1-sat)*30)}%)`);
+    bg.addColorStop(0.6, `hsl(${h2}, ${Math.round(30+sat*70)}%, ${Math.round(12+(1-sat)*28)}%)`);
+    bg.addColorStop(1, `hsl(${h3}, ${Math.round(20+sat*60)}%, ${Math.round(6+(1-sat)*24)}%)`);
+    ctx.fillStyle = bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    const preset = presetSelect.value;
+    if (preset === 'kaleido') drawKaleido(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+    else if (preset === 'lowpoly') drawLowPoly(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+    else if (preset === 'radial') drawRadial(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+    else if (preset === 'gridlines') drawGridLines(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+    else if (preset === 'voronoi') drawDistanceFields(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+    else if (preset === 'prime') drawPrimeArt(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+    else if (preset === 'dragon') drawDragonCurve(f, baseHue, sat, densityVal, rand, strokeW, durationFactor);
+
+    addNoiseOverlay(0.04);
+}
+
+/* ---- presets with durationFactor parameter to scale sizes/numbers ---- */
+
+function drawKaleido(f, baseHue, sat, densityVal, rand, strokeW, durationFactor){
+    const cx = canvas.width/2, cy = canvas.height/2;
+    // rings increases with both density and duration
+    const rings = Math.max(3, Math.round(densityVal * 1.2 * (0.8 + durationFactor/3)));
+    const symmetryCount = symmetric.checked ? 6 : 1;
+    for (let r=0;r<rings;r++){
+        const radius = (Math.min(canvas.width,canvas.height)/2) * ((r+1)/rings) * (0.6 + durationFactor*0.12);
+        const pts = 6 + Math.round(6*(1-(r/rings)));
+        for (let s=0;s<symmetryCount;s++){
+            const angleOffset = (s/symmetryCount)*Math.PI*2;
+            for (let i=0;i<pts;i++){
+                const a = (i/pts)*Math.PI*2 + angleOffset + (Math.random()-0.5)*rand;
+                const rr = radius * (0.6 + 0.8*Math.random());
+                const x = cx + Math.cos(a)*rr + (Math.random()-0.5)*rand*80;
+                const y = cy + Math.sin(a)*rr + (Math.random()-0.5)*rand*80;
+                const hu = (baseHue + i*15 + r*20 + s*30) % 360;
+                drawPolygon(x, y, Math.max(6, 14-r), rr*0.25*(0.8 + durationFactor*0.05), hu, sat, strokeW*(1 - r/rings));
+            }
+        }
+    }
+}
+
+function drawLowPoly(f, baseHue, sat, densityVal, rand, strokeW, durationFactor){
+    const w = canvas.width, h = canvas.height;
+    // points scale with density and duration
+    const points = Math.max(20, Math.round(100 * Math.min(6, densityVal * (0.7 + durationFactor*0.6))));
+    const seeds = [];
+    for (let i=0;i<points;i++) seeds.push([Math.random()*w, Math.random()*h]);
+    const triCount = Math.round(points * (1.0 + durationFactor*0.4));
+    for (let t=0;t<triCount; t++){
+        const a = seeds[Math.floor(Math.random()*seeds.length)];
+        const b = seeds[Math.floor(Math.random()*seeds.length)];
+        const c = seeds[Math.floor(Math.random()*seeds.length)];
+        const cx = (a[0]+b[0]+c[0])/3, cy=(a[1]+b[1]+c[1])/3;
+        const dist = Math.hypot(cx - w/2, cy - h/2);
+        const hue = (baseHue + (dist/(Math.hypot(w/2,h/2))*120) + (Math.random()-0.5)*40) % 360;
+        fillTriangle(a,b,c,hue,sat, strokeW*0.6);
+    }
+}
+
+function drawRadial(f, baseHue, sat, densityVal, rand, strokeW, durationFactor){
+    const cx = canvas.width/2, cy = canvas.height/2;
+    const layers = Math.max(6, Math.round(densityVal*8*(0.7 + durationFactor*0.25)));
+    for (let i=0;i<layers;i++){
+        const t = i/layers;
+        const radius = t * Math.min(canvas.width,canvas.height)/2 * (0.9 + durationFactor*0.12);
+        const sides = 3 + Math.round(2 + 12*(1-t));
+        const hue = (baseHue + i*22 + (Math.random()-0.5)*30) % 360;
+        drawPolygon(cx, cy, sides, radius, hue, sat, strokeW*(1-t));
+    }
+}
+
+function drawGridLines(f, baseHue, sat, densityVal, rand, strokeW, durationFactor){
+    // make cells larger / more cells depending on duration
+    const cols = Math.max(6, Math.round(12 * Math.min(6, densityVal * (0.6 + durationFactor*0.3))));
+    const rows = Math.max(6, Math.round(8 * Math.min(6, densityVal * (0.6 + durationFactor*0.3))));
+    const cellW = canvas.width / cols, cellH = canvas.height / rows;
+    for (let y=0;y<rows;y++){
+        for (let x=0;x<cols;x++){
+            const cx = x*cellW + cellW/2 + (Math.random()-0.5)*rand*cellW;
+            const cy = y*cellH + cellH/2 + (Math.random()-0.5)*rand*cellH;
+            const hue = (baseHue + (x/cols)*80 + (y/rows)*40 + (Math.random()-0.5)*40) % 360;
+            const shape = Math.floor(Math.random()*3);
+            if (shape===0) drawRect(cx,cy,cellW*0.6*(0.4+Math.random()), cellH*0.6*(0.4+Math.random()), hue, sat, strokeW);
+            else if(shape===1) drawPolygon(cx,cy,3 + Math.floor(Math.random()*5), Math.min(cellW,cellH)*0.25*(0.6+Math.random()), hue, sat, strokeW);
+            else drawLinePattern(cx,cy,cellW*0.7, cellH*0.7, hue, strokeW);
+        }
+    }
+}
+
+function drawDistanceFields(f, baseHue, sat, densityVal, rand, strokeW, durationFactor){
+    const seeds = [];
+    const count = Math.max(12, Math.round(60 * Math.min(6, densityVal * (0.5 + durationFactor*0.6))));
+    for (let i=0;i<count;i++) seeds.push({ x: Math.random()*canvas.width, y: Math.random()*canvas.height, hue: (baseHue + Math.random()*160) % 360 });
+    const img = ctx.createImageData(canvas.width, canvas.height);
+    const w = canvas.width, h = canvas.height;
+    for (let y=0;y<h;y+=2){
+        for (let x=0;x<w;x+=2){
+            let best=null, bd=1e9;
+            for (const s of seeds){ const dx=s.x-x, dy=s.y-y; const d=dx*dx+dy*dy; if (d<bd){ bd=d; best=s; } }
+            const lum = 0.12 + 0.6*Math.exp(-bd/(20000/(durationFactor)));
+            const satv = Math.min(1, sat + Math.random()*0.2);
+            const col = hslToRgb(best.hue, satv, lum);
+            const idx = ((y*w)+x)*4;
+            img.data[idx]=col[0]; img.data[idx+1]=col[1]; img.data[idx+2]=col[2]; img.data[idx+3]=255;
+        }
+    }
+    const tmp = document.createElement('canvas'); tmp.width=w; tmp.height=h; tmp.getContext('2d').putImageData(img,0,0);
+    ctx.globalAlpha = 0.95; ctx.drawImage(tmp,0,0); ctx.globalAlpha=1.0;
+    for (const s of seeds){ ctx.strokeStyle = `hsla(${s.hue}, ${Math.round(40+sat*60)}%, 30%, 0.7)`; ctx.beginPath(); ctx.arc(s.x, s.y, 6 + Math.random()*8*(0.6 + durationFactor*0.2), 0, Math.PI*2); ctx.stroke(); }
+}
+
+/* ---- Prime art: number of primes scales with duration ---- */
+function drawPrimeArt(f, baseHue, sat, densityVal, rand, strokeW, durationFactor){
+    const cx = canvas.width/2, cy = canvas.height/2;
+    const baseCount = Math.max(100, Math.round(300 * Math.min(6, densityVal * (0.6 + durationFactor*0.5))));
+    const count = Math.min(3500, Math.round(baseCount * (0.8 + durationFactor*0.6))); // safety cap
+    const primes = generatePrimes(Math.max(10, count + 20));
+    const maxR = Math.min(canvas.width, canvas.height) * 0.45 * (0.9 + durationFactor*0.08);
+    ctx.save();
+    for (let i=0;i<count;i++){
+        const p = primes[i];
+        const angle = (p % 360)/360 * Math.PI*2 + (i*0.0005);
+        const r = (Math.log(p+2)/Math.log(primes[count-1]+2)) * maxR * (0.7 + durationFactor*0.12);
+        const x = cx + Math.cos(angle)*r + (Math.random()-0.5)*rand*40;
+        const y = cy + Math.sin(angle)*r + (Math.random()-0.5)*rand*40;
+        const hu = (baseHue + (p%180))%360;
+        const size = Math.max(1, (1 + Math.sin(i*0.1 + f.rms*50)) * (1 + (f.peak*4)) * (0.8 + durationFactor*0.3));
+        ctx.beginPath();
+        ctx.fillStyle = `hsla(${hu}, ${Math.round(30+sat*60)}%, ${Math.round(35 + (i/count)*30)}%, ${0.95 - Math.random()*0.3})`;
+        ctx.arc(x,y, size, 0, Math.PI*2); ctx.fill();
+        if (i % Math.max(4, Math.floor(10 - densityVal)) === 0){
+            ctx.strokeStyle = `hsla(${hu}, ${Math.round(30+sat*60)}%, ${Math.round(20+Math.random()*30)}%, 0.6)`;
+            ctx.lineWidth = strokeW * 0.5;
+            ctx.beginPath();
+            ctx.moveTo(x,y);
+            const j = (i + Math.floor(count*0.07)) % count;
+            const p2 = primes[j];
+            const angle2 = (p2 % 360)/360 * Math.PI*2;
+            const r2 = (Math.log(p2+2)/Math.log(primes[count-1]+2)) * maxR;
+            const x2 = cx + Math.cos(angle2)*r2; const y2 = cy + Math.sin(angle2)*r2;
+            ctx.quadraticCurveTo(cx, cy, x2, y2);
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+}
+function generatePrimes(n){
+    const primes = []; let v=2;
+    while(primes.length < n){
+        if (isPrime(v)) primes.push(v);
+        v++;
+    }
+    return primes;
+}
+function isPrime(x){ if (x<2) return false; if (x<=3) return true; if (x%2===0) return false; const r = Math.floor(Math.sqrt(x)); for (let i=3;i<=r;i+=2) if (x%i===0) return false; return true; }
+
+/* ---- Dragon curve: iterations & step scale with duration ---- */
+function drawDragonCurve(f, baseHue, sat, densityVal, rand, strokeW, durationFactor) {
+    // 安全に扱うための duration ベース値（秒）
+    const dur = Math.max(0.01, f.duration || 0.01);
+
+    // duration によるスケール（視覚的に 1..6 倍程度）
+    const durationScale = Math.min(8, 1 + dur / 2);
+
+    // 反復回数は duration に応じて増やすが上限を設ける
+    const iters = Math.min(15, Math.max(6, Math.round(6 + Math.log2(1 + dur) * 4)));
+    const seq = generateDragonLS(iters);
+
+    // F（前進）命令の数を数えて、総ステップ量を推定
+    const fSteps = (seq.match(/F/g) || []).length || 1;
+
+    // 基本ステップはキャンバスサイズと反復数から算出（大きすぎないように調整）
+    const approxCells = Math.max(1, Math.sqrt(fSteps));
+    const baseStep = Math.max(0.6, Math.min(canvas.width, canvas.height) / (approxCells * 6));
+
+    // durationScale を掛けて曲線全体を長く／大きくする（ただし最大値でクランプ）
+    let step = baseStep * Math.min(6, durationScale * (1 + Math.log10(1 + dur)));
+    step = Math.max(0.4, Math.min(step, Math.min(canvas.width, canvas.height) / 3));
+
+    // 推定される表示範囲（簡易推定）に基づいて開始位置をオフセットし、中心に収まるようにする
+    const estExtent = Math.sqrt(fSteps) * step;
+    const startX = canvas.width / 2 - estExtent / 2;
+    const startY = canvas.height / 2 - estExtent / 2;
+
+    // 描画（F,+,- のみを描く）
+    let x = startX, y = startY;
+    let dir = 0; // 0:right,1:down,2:left,3:up
+    ctx.save();
+    ctx.lineWidth = Math.max(0.6, strokeW * 0.6);
+
+    // 線を断続的に描いて色を変化させる（長い曲線でも視覚的に追いやすく）
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    let segCount = 0;
+    for (let i = 0; i < seq.length; i++) {
+        const ch = seq[i];
+        if (ch === 'F') {
+            if (dir === 0) x += step;
+            else if (dir === 1) y += step;
+            else if (dir === 2) x -= step;
+            else if (dir === 3) y -= step;
+
+            // 色は位置に応じてグラデーション（長い曲線でも変化が見える）
+            const hu = (baseHue + (i % 360)) % 360;
+            ctx.strokeStyle = `hsla(${hu}, ${Math.round(30 + sat * 60)}%, ${Math.round(30 + (segCount % 20) )}%, 0.95)`;
+
+            ctx.lineTo(x + (Math.random() - 0.5) * rand * 2, y + (Math.random() - 0.5) * rand * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+
+            segCount++;
+        } else if (ch === '+') {
+            dir = (dir + 1) % 4;
+        } else if (ch === '-') {
+            dir = (dir + 3) % 4;
+        }
+    }
+    ctx.restore();
+}
+function generateDragonLS(iterations){
+    let s = 'FX';
+    for (let k=0;k<iterations;k++){
+        let ns = '';
+        for (let i=0;i<s.length;i++){
+            const ch = s[i];
+            if (ch==='X') ns += 'X+YF+';
+            else if (ch==='Y') ns += '-FX-Y';
+            else ns += ch;
+        }
+        s = ns;
+        if (s.length > 500000) break;
+    }
+    return s;
+}
+
+/* ---- drawing helpers ---- */
+function drawPolygon(x,y,sides,radius,hue,sat,strokeW){ ctx.save(); ctx.beginPath();
+    for (let i=0;i<sides;i++){ const a=(i/sides)*Math.PI*2; const px=x+Math.cos(a)*(radius*(0.6+Math.random()*0.8)); const py=y+Math.sin(a)*(radius*(0.6+Math.random()*0.8)); if (i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); }
+    ctx.closePath(); ctx.fillStyle = `hsla(${Math.round(hue)}, ${Math.round(30+sat*60)}%, ${Math.round(40-Math.random()*12)}%, ${0.85-Math.random()*0.25})`;
+    ctx.fill(); ctx.lineWidth = strokeW; ctx.strokeStyle = `hsla(${Math.round(hue)}, ${Math.round(30+sat*60)}%, ${Math.round(30-Math.random()*10)}%, 0.9)`; ctx.stroke(); ctx.restore();
+}
+function fillTriangle(a,b,c,hue,sat,strokeW){ ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.lineTo(c[0],c[1]); ctx.closePath();
+    ctx.fillStyle = `hsla(${Math.round(hue)}, ${Math.round(30+sat*60)}%, ${Math.round(30+Math.random()*30)}%, ${0.95})`; ctx.fill(); ctx.lineWidth = strokeW; ctx.strokeStyle = `hsla(${Math.round(hue)}, ${Math.round(30+sat*60)}%, ${Math.round(20+Math.random()*20)}%, 0.9)`; ctx.stroke();
+}
+function drawRect(x,y,w,h,hue,sat,strokeW){ ctx.save(); ctx.translate(x,y); ctx.rotate((Math.random()-0.5)*0.8); ctx.fillStyle = `hsla(${Math.round(hue)}, ${Math.round(30+sat*60)}%, ${Math.round(40+Math.random()*20)}%, 0.9)`; ctx.fillRect(-w/2,-h/2,w,h); ctx.lineWidth=strokeW; ctx.strokeStyle=`hsla(${Math.round(hue)}, ${Math.round(30+sat*60)}%, ${Math.round(25+Math.random()*20)}%, 0.9)`; ctx.strokeRect(-w/2,-h/2,w,h); ctx.restore(); }
+function drawLinePattern(cx,cy,w,h,hue,strokeW){ ctx.save(); ctx.translate(cx-w/2, cy-h/2); ctx.beginPath(); const lines = 6+Math.floor(Math.random()*8); for (let i=0;i<lines;i++){ const x=(i/lines)*w + (Math.random()-0.5)*w*0.15; ctx.moveTo(x,0); ctx.lineTo(x + (Math.random()-0.5)*w*0.6, h); } ctx.lineWidth = strokeW; ctx.strokeStyle = `hsla(${Math.round(hue)}, 70%, 60%, 0.9)`; ctx.stroke(); ctx.restore(); }
+function addNoiseOverlay(alpha){ const w=canvas.width,h=canvas.height; ctx.fillStyle=`rgba(255,255,255,${alpha})`; for (let i=0;i<200;i++){ const x=Math.random()*w, y=Math.random()*h; ctx.fillRect(x,y,1,1); } }
+
+/* ---- util ---- */
+function map(v,a,b,c,d){ return (v-a)/(b-a)*(d-c)+c; }
+function hslToRgb(h,s,l){ h/=360; let r,g,b; if(s===0){ r=g=b=l; } else { const hue2rgb=(p,q,t)=>{ if(t<0) t+=1; if(t>1) t-=1; if(t<1/6) return p+(q-p)*6*t; if(t<1/2) return q; if(t<2/3) return p+(q-p)*(2/3-t)*6; return p; }; const q = l<0.5? l*(1+s) : l+s-l*s; const p = 2*l-q; r=hue2rgb(p,q,h+1/3); g=hue2rgb(p,q,h); b=hue2rgb(p,q,h-1/3); } return [Math.round(r*255), Math.round(g*255), Math.round(b*255)]; }
+function generatePalette(){ const base = Math.random()*360; return [base, (base+60)%360, (base+120)%360, (base+200)%360, (base+300)%360]; }
+function createSilenceBuffer(){ const c = audioCtx || (audioCtx = new (window.AudioContext || window.webkitAudioContext)()); const buffer = c.createBuffer(1,44100,44100); return buffer; }
+
+/* ---- gallery management (localStorage) ---- */
+function loadGallery(){
+    try{
+        const raw = localStorage.getItem(GKEY);
+        if(!raw) return [];
+        const arr = JSON.parse(raw);
+        if(!Array.isArray(arr)) return [];
+        return arr.slice(0,5);
+    }catch(e){ return []; }
+}
+function saveGalleryToStorage(){
+    try{ localStorage.setItem(GKEY, JSON.stringify(gallery.slice(0,5))); }catch(e){}
+}
+function pushGallery(dataURL){
+    // push newest to front, cap 5
+    gallery.unshift(dataURL);
+    if (gallery.length>5) gallery = gallery.slice(0,5);
+    saveGalleryToStorage();
+}
+function removeGalleryIndex(i){
+    gallery.splice(i,1); saveGalleryToStorage();
+}
+function renderGallery(){
+    galleryEl.innerHTML='';
+    if (gallery.length===0){ galleryEmpty.style.display='block'; return; } else { galleryEmpty.style.display='none'; }
+    gallery.forEach((data, idx)=>{
+        const d = document.createElement('div'); d.className='thumb';
+        const img = document.createElement('img'); img.src = data;
+        const del = document.createElement('div'); del.className='del'; del.innerText='×';
+        const idp = document.createElement('div'); idp.className='idx'; idp.innerText = (idx+1);
+        d.appendChild(img); d.appendChild(del); d.appendChild(idp);
+        // click to restore to canvas (draw image)
+        d.addEventListener('click', (ev)=>{
+            // if click on delete, handled separately
+            if (ev.target === del) return;
+            const im = new Image();
+            im.onload = () => {
+                ctx.clearRect(0,0,canvas.width,canvas.height);
+                // fit image into canvas
+                ctx.drawImage(im, 0, 0, canvas.width, canvas.height);
+            };
+            im.src = data;
+        });
+        del.addEventListener('click', (ev)=>{
+            ev.stopPropagation();
+            if (!confirm('このサムネイルを削除しますか？')) return;
+            removeGalleryIndex(idx);
+            renderGallery();
+        });
+        // right-click to save via browser context (no JS needed), but also add longpress handler?
+        galleryEl.appendChild(d);
+    });
+}
+renderGallery();
+
+/* ---- initial demo text ---- */
+ctx.fillStyle = 'rgba(8,12,24,0.95)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+ctx.fillStyle = '#cfe6ff'; ctx.font = '20px system-ui';
+ctx.fillText('ここに幾何学的でカラフルな音のイラストが生成されます。音声を読み込むか録音してみてください。', 28, 68);
+
+</script>
+</body>
+</html>
